@@ -1,5 +1,5 @@
 # 💫 About Me:
-🔭 I’m an Engineerind student<br>👯 I’m looking to collaborate on Opensource organizations<br>🌱 I’m currently learning Artificial Intelligence and Machine Learning
+🔭 I’m an Engineering student<br>👯 I’m looking to collaborate on Opensource organizations<br>🌱 I’m currently learning Artificial Intelligence and Machine Learning
 
 
 ## 🌐 Socials:
