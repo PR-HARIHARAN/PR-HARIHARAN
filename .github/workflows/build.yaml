@@ -1,40 +1,51 @@
 name: README build
+
 on:
   push:
     branches:
       - main
   schedule:
-    - cron: "0 4 * * *"
+    - cron: "0 4 * * *" # Daily at 4 AM UTC
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # Needed for pushing changes
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
         with:
           fetch-depth: 1
+
       - name: Get Python 3.8
         uses: actions/setup-python@v2
         with:
           python-version: '3.8'
+
       - name: Configure pip cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/cache/requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: python -m pip install -r cache/requirements.txt
+
       - name: Update README file
         env:
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           USER_NAME: ${{ secrets.USER_NAME }}
         run: python today.py
-      - name: Commit
-        run: |-
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+          git config --global user.name "${{ github.actor }}"
           git add .
-          git diff
-          git config --global user.email "github-actions-bot@PR-HARIHARAN.github.io"
-          git config --global user.name "PR-HARIHARAN/GitHub-Actions-Bot"
           git commit -m "Updated README" -a || echo "No changes to commit"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git push
