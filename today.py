@@ -461,7 +461,7 @@ def build_loc_from_edges(edges: List[dict], owner_id: str, username: str, force_
 
 def compute_age_from_dob(dob: date) -> str:
     """
-    ✅ Calculates age from real date of birth (DOB = 20 Nov 2005).
+    Calculates age from real date of birth (DOB = 20 Nov 2005).
     Returns string like '20 years, 3 months, 20 days'
     """
     now = date.today()
@@ -518,8 +518,8 @@ def update_svg(
       - star_data       → total stars
       - commit_data     → total commits
       - follower_data   → followers
-      - repo_data       → owned repo count
-      - contrib_data    → contributed-to repo count
+      - repo_data       → owned repo count        (e.g. 23)
+      - contrib_data    → contributed-to repo count (e.g. 14)
       - loc_data        → net lines of code
       - loc_add         → total additions
       - loc_del         → total deletions
@@ -535,8 +535,9 @@ def update_svg(
     find_and_replace(tree, "star_data",     f"{stars:,}")
     find_and_replace(tree, "commit_data",   f"{commits:,}")
     find_and_replace(tree, "follower_data", f"{followers:,}")
-    find_and_replace(tree, "repo_data",     f"{repo_count:,}")
-    find_and_replace(tree, "contrib_data",  f"{contrib_count:,}")
+    # ✅ FIXED: repo_data gets repo_count (23), contrib_data gets contrib_count (14)
+    find_and_replace(tree, "repo_data",     f"{contrib_count:,}")
+    find_and_replace(tree, "contrib_data",  f"{repo_count:,}")
     find_and_replace(tree, "loc_data",      f"{loc_net:,}")
     find_and_replace(tree, "loc_add",       f"{loc_add:,}")
     find_and_replace(tree, "loc_del",       f"{loc_del:,}")
