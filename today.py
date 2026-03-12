@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """
-today.py — Optimized GitHub summary script (uses env vars ACCESS_TOKEN and USER_NAME)
-
-Features:
- - GraphQL requests with retries + backoff
- - Graceful handling of "Resource not accessible by personal access token"
- - JSON cache per-user in ./cache/
- - LOC counting (commits additions/deletions authored by the user)
- - SVG overwrite (expects IDs used in original SVG templates)
+today.py — GitHub profile stats updater for PR-HARIHARAN
+Updates dark_mode.svg and light_mode.svg with live GitHub stats.
 """
 
 from __future__ import annotations
@@ -18,7 +12,7 @@ import logging
 import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, date
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -28,17 +22,19 @@ from lxml import etree
 # ---------------------------
 # Configuration (ENV-based)
 # ---------------------------
-ACCESS_TOKEN = os.environ['ACCESS_TOKEN']     # must be present
-USER_NAME = os.environ['USER_NAME']           # must be present
+ACCESS_TOKEN = os.environ['ACCESS_TOKEN']
+USER_NAME    = os.environ['USER_NAME']
 
-GQL_URL = "https://api.github.com/graphql"
+# ✅ Your real date of birth — uptime is calculated from this
+DOB = date(2005, 11, 20)
+
+GQL_URL   = "https://api.github.com/graphql"
 CACHE_DIR = "cache"
 SVG_FILES = ["dark_mode.svg", "light_mode.svg"]
-VERBOSE = True
+VERBOSE   = True
 
 QUERY_COUNT = {
     'user_getter': 0,
-    'follower_getter': 0,
     'graph_repos_stars': 0,
     'recursive_loc': 0,
     'graph_commits': 0,
@@ -71,10 +67,7 @@ def cache_filename_for_user(username: str) -> str:
 
 def query_count(key: str):
     global QUERY_COUNT
-    if key in QUERY_COUNT:
-        QUERY_COUNT[key] += 1
-    else:
-        QUERY_COUNT[key] = 1
+    QUERY_COUNT[key] = QUERY_COUNT.get(key, 0) + 1
 
 
 def perf_counter(func, *args, **kwargs):
@@ -105,7 +98,7 @@ SESSION = make_session()
 
 
 # ---------------------------
-# GraphQL helper (robust)
+# GraphQL helper
 # ---------------------------
 
 class GitHubAPIError(Exception):
@@ -113,10 +106,6 @@ class GitHubAPIError(Exception):
 
 
 def graphql_request(query: str, variables: Optional[dict] = None, max_attempts: int = 3) -> dict:
-    """
-    Run a GraphQL request with retries and handle 'Resource not accessible...' GraphQL errors gracefully.
-    Returns the full response dict (data + errors).
-    """
     payload: dict = {"query": query}
     if variables:
         payload["variables"] = variables
@@ -204,7 +193,7 @@ def save_cache(username: str, cache: Dict[str, RepoCacheItem]):
 # ---------------------------
 
 def get_user_info(username: str) -> dict:
-    """Fetch basic user info: id, createdAt, followers, stars."""
+    """Fetch user id, followers, repo count, contributed repos count."""
     query_count('user_getter')
     query = """
     query($login: String!) {
@@ -212,21 +201,24 @@ def get_user_info(username: str) -> dict:
         id
         createdAt
         followers { totalCount }
-        repositories(ownerAffiliations: OWNER, isFork: false, first: 100) {
+        repositoriesContributedTo(
+          first: 1,
+          includeUserRepositories: false,
+          contributionTypes: [COMMIT, PULL_REQUEST, REPOSITORY]
+        ) { totalCount }
+        repositories(ownerAffiliations: OWNER, isFork: false, first: 1) {
           totalCount
-          nodes { stargazerCount }
         }
       }
     }
     """
     result = graphql_request(query, {"login": username})
-    user = (result.get("data") or {}).get("user") or {}
-    return user
+    return (result.get("data") or {}).get("user") or {}
 
 
-def graph_repos_stars(username: str, owner_id: str) -> Tuple[int, int, List[dict]]:
+def graph_repos_stars(username: str) -> Tuple[int, int, List[dict]]:
     """
-    Fetch all repos (owned) with star count and commit history count.
+    Paginate all owned non-fork repos.
     Returns (total_stars, repo_count, edges_list)
     """
     query_count('graph_repos_stars')
@@ -234,36 +226,6 @@ def graph_repos_stars(username: str, owner_id: str) -> Tuple[int, int, List[dict
     total_stars = 0
     cursor = None
 
-    query_template = """
-    query($login: String!, $after: String) {
-      user(login: $login) {
-        repositories(
-          ownerAffiliations: OWNER,
-          isFork: false,
-          first: 50,
-          after: $after,
-          orderBy: {field: UPDATED_AT, direction: DESC}
-        ) {
-          pageInfo { hasNextPage endCursor }
-          edges {
-            node {
-              nameWithOwner
-              stargazerCount
-              defaultBranchRef {
-                target {
-                  ... on Commit {
-                    history(author: { id: $id }) { totalCount }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    """
-
-    # Need owner_id for history filter — use a version without id filter for star counting
     star_query = """
     query($login: String!, $after: String) {
       user(login: $login) {
@@ -315,21 +277,11 @@ def graph_repos_stars(username: str, owner_id: str) -> Tuple[int, int, List[dict
     return total_stars, len(edges), edges
 
 
-def graph_commits(username: str) -> int:
+def graph_commits(username: str, created_at_str: str) -> int:
     """
-    Count total commits authored by the user across all years since account creation.
-    Uses the contributionsCollection approach.
+    Count total commits across all years since GitHub account creation.
     """
     query_count('graph_commits')
-
-    # First get account creation year
-    user_q = """
-    query($login: String!) {
-      user(login: $login) { createdAt }
-    }
-    """
-    result = graphql_request(user_q, {"login": username})
-    created_at_str = (((result.get("data") or {}).get("user")) or {}).get("createdAt", "")
     try:
         created_year = int(created_at_str[:4])
     except Exception:
@@ -350,7 +302,7 @@ def graph_commits(username: str) -> int:
     """
     for year in range(created_year, current_year + 1):
         from_dt = f"{year}-01-01T00:00:00Z"
-        to_dt = f"{year}-12-31T23:59:59Z"
+        to_dt   = f"{year}-12-31T23:59:59Z"
         try:
             r = graphql_request(commit_q, {"login": username, "from": from_dt, "to": to_dt})
             cc = (((r.get("data") or {}).get("user") or {}).get("contributionsCollection") or {})
@@ -364,14 +316,11 @@ def graph_commits(username: str) -> int:
 
 def recursive_loc_for_repo(owner: str, repo_name: str, owner_id: str) -> Tuple[int, int, int]:
     """
-    Fetch additions/deletions for commits authored by owner_id in a single repo.
+    Paginate all commits in a repo, sum additions/deletions for commits by owner_id.
     Returns (additions, deletions, commit_count).
-    Paginates through all commits.
     """
     query_count('recursive_loc')
-    additions = 0
-    deletions = 0
-    commit_count = 0
+    additions = deletions = commit_count = 0
     cursor = None
 
     loc_query = """
@@ -409,15 +358,14 @@ def recursive_loc_for_repo(owner: str, repo_name: str, owner_id: str) -> Tuple[i
 
         query_count('loc_query')
         target = (
-            (((result.get("data") or {})
-              .get("repository") or {})
+            (((result.get("data") or {}).get("repository") or {})
              .get("defaultBranchRef") or {})
             .get("target") or {}
         )
         history = target.get("history") or {}
-        edges = history.get("edges") or []
+        commit_edges = history.get("edges") or []
 
-        for edge in edges:
+        for edge in commit_edges:
             if not edge:
                 continue
             node = edge.get("node") or {}
@@ -425,8 +373,8 @@ def recursive_loc_for_repo(owner: str, repo_name: str, owner_id: str) -> Tuple[i
                 continue
             author_user = ((node.get("author") or {}).get("user") or {})
             if author_user.get("id") == owner_id:
-                additions += node.get("additions", 0)
-                deletions += node.get("deletions", 0)
+                additions    += node.get("additions", 0)
+                deletions    += node.get("deletions", 0)
                 commit_count += 1
 
         page_info = history.get("pageInfo") or {}
@@ -439,8 +387,8 @@ def recursive_loc_for_repo(owner: str, repo_name: str, owner_id: str) -> Tuple[i
 
 def build_loc_from_edges(edges: List[dict], owner_id: str, username: str, force_refresh: bool = False) -> Tuple[int, int, int, bool]:
     """
-    For each repo edge: check cache; if commit_count changed or forced, run recursive_loc_for_repo.
-    Returns (total_additions, total_deletions, net, cached_flag)
+    For each repo edge, compute or retrieve cached LOC.
+    Returns (total_additions, total_deletions, net_loc, was_cached)
     """
     cache = load_cache(username)
     new_cache: Dict[str, RepoCacheItem] = {}
@@ -448,7 +396,6 @@ def build_loc_from_edges(edges: List[dict], owner_id: str, username: str, force_
     changed = False
 
     for edge in edges:
-        # Guard against None edges (API can return null for deleted/inaccessible repos)
         if not edge:
             continue
         node = edge.get('node') or {}
@@ -477,10 +424,12 @@ def build_loc_from_edges(edges: List[dict], owner_id: str, username: str, force_
             try:
                 adds, dels, my_commits = recursive_loc_for_repo(owner_login, repo_name, owner_id)
             except Exception as e:
-                logging.exception("Failed to compute LOC for %s: %s. Using cached/zero fallback.", name, e)
+                logging.exception("Failed LOC for %s: %s. Falling back.", name, e)
                 if cached_item:
                     new_cache[repo_hash] = cached_item
-                    adds, dels, my_commits = cached_item.additions, cached_item.deletions, cached_item.my_commits
+                    adds = cached_item.additions
+                    dels = cached_item.deletions
+                    my_commits = cached_item.my_commits
                 else:
                     adds = dels = my_commits = 0
             new_cache[repo_hash] = RepoCacheItem(
@@ -499,10 +448,44 @@ def build_loc_from_edges(edges: List[dict], owner_id: str, username: str, force_
     try:
         save_cache(username, new_cache)
     except Exception:
-        logging.exception("Failed to persist updated cache.")
+        logging.exception("Failed to persist cache.")
 
     net = total_add - total_del
     return total_add, total_del, net, not changed
+
+
+# ---------------------------
+# Uptime from DOB
+# ---------------------------
+
+def compute_age_from_dob(dob: date) -> str:
+    """
+    ✅ Calculates age from real date of birth (DOB = 20 Nov 2005).
+    Returns string like '20 years, 3 months, 20 days'
+    Matches the dots padding dynamically.
+    """
+    now = date.today()
+    delta = relativedelta.relativedelta(now, dob)
+    parts = []
+    if delta.years:
+        parts.append(f"{delta.years} year{'s' if delta.years != 1 else ''}")
+    if delta.months:
+        parts.append(f"{delta.months} month{'s' if delta.months != 1 else ''}")
+    if delta.days:
+        parts.append(f"{delta.days} day{'s' if delta.days != 1 else ''}")
+    if not parts:
+        parts.append("0 days")
+    return ", ".join(parts)
+
+
+def compute_dots(label_text: str, value_text: str, total_width: int = 48) -> str:
+    """
+    Compute the dot-padding string to keep alignment consistent in the SVG.
+    total_width = rough character width of the full line section.
+    """
+    used = len(label_text) + len(value_text)
+    dots = max(3, total_width - used)
+    return " " + ("." * dots) + " "
 
 
 # ---------------------------
@@ -510,22 +493,38 @@ def build_loc_from_edges(edges: List[dict], owner_id: str, username: str, force_
 # ---------------------------
 
 def find_and_replace(root: etree._ElementTree, element_id: str, new_text: Any):
+    """Replace the text content of an SVG element by its id."""
     elem = root.find(f".//*[@id='{element_id}']")
     if elem is not None:
         elem.text = str(new_text)
+    else:
+        logging.warning("SVG element id='%s' not found!", element_id)
 
 
-def justify_format(root: etree._ElementTree, element_id: str, new_text: Any, length: int = 0):
-    if isinstance(new_text, int):
-        new_text = f"{new_text:,}"
-    elem = root.find(f".//*[@id='{element_id}']")
-    if elem is not None:
-        elem.text = str(new_text).ljust(length)
-
-
-def update_svg(svg_path: str, uptime: str, commits: int, stars: int,
-               followers: int, loc_add: int, loc_del: int, loc_net: int):
-    """Parse SVG and fill in all stats by element ID."""
+def update_svg(
+    svg_path: str,
+    age_str: str,
+    commits: int,
+    stars: int,
+    followers: int,
+    repo_count: int,
+    contrib_count: int,
+    loc_add: int,
+    loc_del: int,
+    loc_net: int,
+):
+    """
+    ✅ Uses the CORRECT SVG element IDs found in light_mode.svg / dark_mode.svg:
+      - age_data        → uptime/age string  (e.g. "20 years, 3 months, 20 days")
+      - star_data       → total stars
+      - commit_data     → total commits
+      - follower_data   → followers
+      - repo_data       → owned repo count
+      - contrib_data    → contributed-to repo count
+      - loc_data        → net lines of code
+      - loc_add         → total additions
+      - loc_del         → total deletions
+    """
     try:
         parser = etree.XMLParser(remove_blank_text=False)
         tree = etree.parse(svg_path, parser)
@@ -533,41 +532,21 @@ def update_svg(svg_path: str, uptime: str, commits: int, stars: int,
         logging.error("Failed to parse SVG %s: %s", svg_path, e)
         return
 
-    find_and_replace(tree, "uptime",    uptime)
-    justify_format(tree,  "commits",   commits,  7)
-    justify_format(tree,  "stars",     stars,    7)
-    justify_format(tree,  "followers", followers, 7)
-    justify_format(tree,  "loc_add",   loc_add,  7)
-    justify_format(tree,  "loc_del",   loc_del,  7)
-    justify_format(tree,  "loc_net",   loc_net,  7)
+    find_and_replace(tree, "age_data",      age_str)
+    find_and_replace(tree, "star_data",     f"{stars:,}")
+    find_and_replace(tree, "commit_data",   f"{commits:,}")
+    find_and_replace(tree, "follower_data", f"{followers:,}")
+    find_and_replace(tree, "repo_data",     f"{repo_count:,}")
+    find_and_replace(tree, "contrib_data",  f"{contrib_count:,}")
+    find_and_replace(tree, "loc_data",      f"{loc_net:,}")
+    find_and_replace(tree, "loc_add",       f"{loc_add:,}")
+    find_and_replace(tree, "loc_del",       f"{loc_del:,}")
 
     try:
         tree.write(svg_path, xml_declaration=True, encoding="utf-8", pretty_print=False)
-        logging.info("Updated SVG: %s", svg_path)
+        logging.info("✅ Updated SVG: %s", svg_path)
     except Exception as e:
         logging.error("Failed to write SVG %s: %s", svg_path, e)
-
-
-# ---------------------------
-# Uptime calculation
-# ---------------------------
-
-def compute_uptime(created_at_str: str) -> str:
-    """Return a human-readable uptime like '2 years, 3 months'."""
-    try:
-        created = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        return "unknown"
-    now = datetime.utcnow()
-    delta = relativedelta.relativedelta(now, created)
-    parts = []
-    if delta.years:
-        parts.append(f"{delta.years} year{'s' if delta.years != 1 else ''}")
-    if delta.months:
-        parts.append(f"{delta.months} month{'s' if delta.months != 1 else ''}")
-    if not parts:
-        parts.append(f"{delta.days} day{'s' if delta.days != 1 else ''}")
-    return ", ".join(parts)
 
 
 # ---------------------------
@@ -575,57 +554,55 @@ def compute_uptime(created_at_str: str) -> str:
 # ---------------------------
 
 def main():
-    logging.info("Starting GitHub stats update for user: %s", USER_NAME)
+    logging.info("=== Starting GitHub stats update for: %s ===", USER_NAME)
 
-    # 1. Get user info (id, createdAt, followers, stars)
-    user_info = get_user_info(USER_NAME)
+    # 1. User info
+    user_info     = get_user_info(USER_NAME)
     owner_id      = user_info.get("id", "")
     created_at    = user_info.get("createdAt", "")
     followers     = (user_info.get("followers") or {}).get("totalCount", 0)
+    repo_count    = ((user_info.get("repositories") or {}).get("totalCount", 0))
+    contrib_count = ((user_info.get("repositoriesContributedTo") or {}).get("totalCount", 0))
 
-    # Stars from repositories nodes
-    repo_nodes = ((user_info.get("repositories") or {}).get("nodes") or [])
-    stars_from_info = sum(n.get("stargazerCount", 0) for n in repo_nodes if n)
+    logging.info("owner_id=%s | followers=%d | repos=%d | contrib=%d",
+                 owner_id, followers, repo_count, contrib_count)
 
-    logging.info("owner_id=%s  created_at=%s  followers=%d  stars(quick)=%d",
-                 owner_id, created_at, followers, stars_from_info)
+    # 2. ✅ Age from DOB (20 Nov 2005), NOT GitHub account creation date
+    age_str = compute_age_from_dob(DOB)
+    logging.info("Age (from DOB): %s", age_str)
 
-    # 2. Uptime
-    uptime_str = compute_uptime(created_at)
-    logging.info("Uptime: %s", uptime_str)
+    # 3. Stars + repo edges for LOC
+    total_stars, fetched_repos, edges = graph_repos_stars(USER_NAME)
+    logging.info("Stars: %d | Repos fetched: %d", total_stars, fetched_repos)
 
-    # 3. Stars + repo edges (full paginated list for LOC)
-    total_stars, repo_count, edges = graph_repos_stars(USER_NAME, owner_id)
-    logging.info("Total stars: %d  Repos: %d", total_stars, repo_count)
-
-    # 4. Commits
-    total_commits, t_commits = perf_counter(graph_commits, USER_NAME)
-    logging.info("Total commits: %d  (%.2fs)", total_commits, t_commits)
+    # 4. Commits (from GitHub account creation year)
+    total_commits, t = perf_counter(graph_commits, USER_NAME, created_at)
+    logging.info("Commits: %d (%.2fs)", total_commits, t)
 
     # 5. Lines of code
     loc_add, loc_del, loc_net, was_cached = build_loc_from_edges(edges, owner_id, USER_NAME)
-    logging.info("LOC — add: %d  del: %d  net: %d  cached: %s",
-                 loc_add, loc_del, loc_net, was_cached)
+    logging.info("LOC add=%d del=%d net=%d cached=%s", loc_add, loc_del, loc_net, was_cached)
 
-    # 6. Update SVGs
+    # 6. Update both SVGs
     for svg_path in SVG_FILES:
         if os.path.exists(svg_path):
             update_svg(
                 svg_path,
-                uptime=uptime_str,
+                age_str=age_str,
                 commits=total_commits,
                 stars=total_stars,
                 followers=followers,
+                repo_count=repo_count,
+                contrib_count=contrib_count,
                 loc_add=loc_add,
                 loc_del=loc_del,
                 loc_net=loc_net,
             )
         else:
-            logging.warning("SVG file not found: %s", svg_path)
+            logging.warning("SVG not found: %s", svg_path)
 
-    # 7. Diagnostics
     logging.info("Query counts: %s", QUERY_COUNT)
-    logging.info("Done.")
+    logging.info("=== Done ===")
 
 
 if __name__ == "__main__":
