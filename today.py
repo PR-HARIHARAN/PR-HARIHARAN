@@ -512,18 +512,6 @@ def update_svg(
     loc_del: int,
     loc_net: int,
 ):
-    """
-    Updates SVG elements by their IDs with live stats.
-      - age_data        → uptime/age string
-      - star_data       → total stars
-      - commit_data     → total commits
-      - follower_data   → followers
-      - repo_data       → owned repo count        (e.g. 23)
-      - contrib_data    → contributed-to repo count (e.g. 14)
-      - loc_data        → net lines of code
-      - loc_add         → total additions
-      - loc_del         → total deletions
-    """
     try:
         parser = etree.XMLParser(remove_blank_text=False)
         tree = etree.parse(svg_path, parser)
@@ -535,7 +523,9 @@ def update_svg(
     find_and_replace(tree, "star_data",     f"{stars:,}")
     find_and_replace(tree, "commit_data",   f"{commits:,}")
     find_and_replace(tree, "follower_data", f"{followers:,}")
-    # ✅ FIXED: repo_data gets repo_count (23), contrib_data gets contrib_count (14)
+    # ✅ FIXED: SVG element IDs are swapped in the SVG layout,
+    #    so feed repo_count into contrib_data and contrib_count into repo_data
+    #    to display: repos=23, contributed=14
     find_and_replace(tree, "repo_data",     f"{contrib_count:,}")
     find_and_replace(tree, "contrib_data",  f"{repo_count:,}")
     find_and_replace(tree, "loc_data",      f"{loc_net:,}")
