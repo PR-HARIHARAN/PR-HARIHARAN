@@ -204,7 +204,7 @@ def get_user_info(username: str) -> dict:
         repositoriesContributedTo(
           first: 1,
           includeUserRepositories: false,
-          contributionTypes: [COMMIT, PULL_REQUEST, REPOSITORY]
+          contributionTypes: [COMMIT, PULL_REQUEST, ISSUE, REPOSITORY]
         ) { totalCount }
         repositories(ownerAffiliations: OWNER, isFork: false, first: 1) {
           totalCount
@@ -279,7 +279,7 @@ def graph_repos_stars(username: str) -> Tuple[int, int, List[dict]]:
 
 def graph_commits(username: str, created_at_str: str) -> int:
     """
-    Count total commits across all years since GitHub account creation.
+    Count total commits (public + private) across all years since GitHub account creation.
     """
     query_count('graph_commits')
     try:
@@ -306,6 +306,7 @@ def graph_commits(username: str, created_at_str: str) -> int:
         try:
             r = graphql_request(commit_q, {"login": username, "from": from_dt, "to": to_dt})
             cc = (((r.get("data") or {}).get("user") or {}).get("contributionsCollection") or {})
+            # ✅ Include both public commits and private/restricted commits
             total_commits += cc.get("totalCommitContributions", 0)
             total_commits += cc.get("restrictedContributionsCount", 0)
         except Exception as e:
@@ -462,7 +463,6 @@ def compute_age_from_dob(dob: date) -> str:
     """
     ✅ Calculates age from real date of birth (DOB = 20 Nov 2005).
     Returns string like '20 years, 3 months, 20 days'
-    Matches the dots padding dynamically.
     """
     now = date.today()
     delta = relativedelta.relativedelta(now, dob)
@@ -481,7 +481,6 @@ def compute_age_from_dob(dob: date) -> str:
 def compute_dots(label_text: str, value_text: str, total_width: int = 48) -> str:
     """
     Compute the dot-padding string to keep alignment consistent in the SVG.
-    total_width = rough character width of the full line section.
     """
     used = len(label_text) + len(value_text)
     dots = max(3, total_width - used)
@@ -514,8 +513,8 @@ def update_svg(
     loc_net: int,
 ):
     """
-    ✅ Uses the CORRECT SVG element IDs found in light_mode.svg / dark_mode.svg:
-      - age_data        → uptime/age string  (e.g. "20 years, 3 months, 20 days")
+    Updates SVG elements by their IDs with live stats.
+      - age_data        → uptime/age string
       - star_data       → total stars
       - commit_data     → total commits
       - follower_data   → followers
@@ -575,7 +574,7 @@ def main():
     total_stars, fetched_repos, edges = graph_repos_stars(USER_NAME)
     logging.info("Stars: %d | Repos fetched: %d", total_stars, fetched_repos)
 
-    # 4. Commits (from GitHub account creation year)
+    # 4. Commits — public + private (from GitHub account creation year)
     total_commits, t = perf_counter(graph_commits, USER_NAME, created_at)
     logging.info("Commits: %d (%.2fs)", total_commits, t)
 
