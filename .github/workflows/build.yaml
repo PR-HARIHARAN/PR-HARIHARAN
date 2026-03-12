@@ -7,29 +7,30 @@ on:
   schedule:
     - cron: "0 4 * * *" # Daily at 4 AM UTC
 
+# Explicit default token permissions for the whole workflow
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write  # Needed for pushing changes
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Get Python 3.8
-        uses: actions/setup-python@v2
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.8'
+          python-version: "3.8"
 
       - name: Configure pip cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/cache/requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('cache/requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
 
       - name: Install dependencies
@@ -43,9 +44,8 @@ jobs:
 
       - name: Commit and push changes
         env:
-          BOT_NAME: "hariharan2005"  # <-- Account 2 username
+          BOT_NAME: "hariharan2005" # <-- Account 2 username
           BOT_EMAIL: "50076338+hariharan2005@users.noreply.github.com"
-
         run: |
           git config user.name "$BOT_NAME"
           git config user.email "$BOT_EMAIL"
@@ -53,6 +53,4 @@ jobs:
           git add .
           git commit -m "Updated README" || echo "No changes to commit"
 
-          # GITHUB_TOKEN is already set up by Actions, this is enough
           git push
-
